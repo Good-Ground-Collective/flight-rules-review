@@ -43,6 +43,7 @@ export const GatherInputSchema = BaseSchema.extend({
   EXPECTED_HEAD_SHA: z.string().default(""),
   SENDER_LOGIN: z.string().default(""),
   MAX_CHANGED_LINES: z.coerce.number().int().positive().default(20000),
+  GITHUB_RUN_ID: z.string().default(""),
   GITHUB_OUTPUT: z.string().min(1),
 });
 export type GatherInput = z.infer<typeof GatherInputSchema>;

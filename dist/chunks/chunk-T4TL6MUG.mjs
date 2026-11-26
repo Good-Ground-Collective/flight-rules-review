@@ -28062,6 +28062,60 @@ var ActionReviewVerifier = class {
   }
 };
 
+// src/checks.ts
+var PASSED = ["success", "neutral", "skipped"];
+function ownRun(run, runId) {
+  return runId !== "" && (run.details_url?.includes(`/actions/runs/${runId}/`) ?? false);
+}
+async function loadChecks(client, repo, sha, runId) {
+  const runs = [];
+  for (let page = 1; ; page++) {
+    const { total_count: total, check_runs: batch } = await client.get(
+      `/repos/${repo}/commits/${sha}/check-runs?per_page=100&page=${page}`
+    );
+    runs.push(...batch);
+    if (batch.length === 0 || runs.length >= total) break;
+  }
+  const status = await client.get(`/repos/${repo}/commits/${sha}/status?per_page=100`);
+  return { runs: runs.filter((run) => !ownRun(run, runId)), status };
+}
+function checksGreen(checks) {
+  const pending = checks.runs.filter((run) => run.status !== "completed");
+  if (pending.length > 0) return { green: false, reason: `${pending.map((run) => run.name).join(", ")} still running` };
+  const failed = checks.runs.filter((run) => !PASSED.includes(run.conclusion ?? ""));
+  if (failed.length > 0) return { green: false, reason: `${failed.map((run) => run.name).join(", ")} did not pass` };
+  if (checks.status.total_count > 0 && checks.status.state !== "success")
+    return { green: false, reason: `commit status is ${checks.status.state}` };
+  return { green: true, reason: "" };
+}
+function checksContext(checks, sha, fetchedAt) {
+  const pending = checks.runs.filter((run) => run.status !== "completed").length + checks.status.statuses.filter((s) => s.state === "pending").length;
+  return {
+    head_sha: sha,
+    fetched_at: fetchedAt,
+    note: "Snapshot taken before the review started; CI often runs alongside this review, so pending entries are normal. Only a check run with status completed and conclusion success can be cited, as check_run evidence with its check_run_id. This review's own jobs are excluded.",
+    pending,
+    check_runs: checks.runs.map((run) => ({
+      check_run_id: run.id,
+      name: run.name,
+      app: run.app?.slug ?? null,
+      status: run.status,
+      conclusion: run.conclusion,
+      url: run.html_url ?? run.details_url,
+      completed_at: run.completed_at
+    })),
+    commit_status: {
+      state: checks.status.total_count > 0 ? checks.status.state : "none",
+      statuses: checks.status.statuses.map((status) => ({
+        context: status.context,
+        state: status.state,
+        description: status.description,
+        url: status.target_url
+      }))
+    }
+  };
+}
+
 // src/github.ts
 var GitHubError = class extends Error {
   constructor(status, method, path, detail) {
@@ -28193,6 +28247,7 @@ var GatherInputSchema = BaseSchema.extend({
   EXPECTED_HEAD_SHA: external_exports.string().default(""),
   SENDER_LOGIN: external_exports.string().default(""),
   MAX_CHANGED_LINES: external_exports.coerce.number().int().positive().default(2e4),
+  GITHUB_RUN_ID: external_exports.string().default(""),
   GITHUB_OUTPUT: external_exports.string().min(1)
 });
 var PostInputSchema = BaseSchema.extend({
@@ -28398,6 +28453,9 @@ export {
   describePolicy,
   commenterAuthority,
   ActionReviewVerifier,
+  loadChecks,
+  checksGreen,
+  checksContext,
   GitHubError,
   GitHubClient,
   parseDecisionOwners,

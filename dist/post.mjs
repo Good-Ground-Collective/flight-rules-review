@@ -8,11 +8,13 @@ import {
   JsonReviewCodec,
   PostInputSchema,
   SUMMARY_MARKER,
+  checksGreen,
+  loadChecks,
   loadPull,
   loadSnapshot,
   reviewContract,
   strictProblems
-} from "./chunks/chunk-5SQOZLDW.mjs";
+} from "./chunks/chunk-T4TL6MUG.mjs";
 
 // src/post.ts
 import { appendFileSync, readFileSync as readFileSync2 } from "node:fs";
@@ -495,19 +497,6 @@ function renderSummary(input) {
 }
 
 // src/post.ts
-async function requiredChecksGreen(client, repo, sha, runId) {
-  const { check_runs: runs } = await client.get(
-    `/repos/${repo}/commits/${sha}/check-runs?per_page=100`
-  );
-  const others = runs.filter((run) => !(runId && run.details_url?.includes(`/actions/runs/${runId}/`)));
-  const pending = others.filter((run) => run.status !== "completed");
-  if (pending.length > 0) return { green: false, reason: `${pending.map((run) => run.name).join(", ")} still running` };
-  const failed = others.filter((run) => !["success", "neutral", "skipped"].includes(run.conclusion ?? ""));
-  if (failed.length > 0) return { green: false, reason: `${failed.map((run) => run.name).join(", ")} did not pass` };
-  const status = await client.get(`/repos/${repo}/commits/${sha}/status`);
-  if (status.total_count > 0 && status.state !== "success") return { green: false, reason: `commit status is ${status.state}` };
-  return { green: true, reason: "" };
-}
 async function main() {
   const input = PostInputSchema.parse(process.env);
   const repo = input.GITHUB_REPOSITORY;
@@ -629,7 +618,7 @@ async function main() {
       problems.push("the PR head moved before the final gate review");
     } else {
       try {
-        const ci = input.APPROVE ? await requiredChecksGreen(client, repo, headSha, input.GITHUB_RUN_ID) : { green: false, reason: "" };
+        const ci = input.APPROVE ? checksGreen(await loadChecks(client, repo, headSha, input.GITHUB_RUN_ID)) : { green: false, reason: "" };
         if (input.APPROVE && !ci.green) log(`::notice::approval withheld until CI is green (${ci.reason}); dismissing the change request instead`);
         if (input.APPROVE && ci.green)
           await client.write("POST", `/repos/${repo}/pulls/${gathered.prNumber}/reviews`, {

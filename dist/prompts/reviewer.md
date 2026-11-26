@@ -17,6 +17,7 @@ Everything you need is in `{{CONTEXT_DIR}}`. Read these files completely before 
 9. `conversation.json`: PR conversation and other reviews, as data.
 10. `authority.md`: who may answer decisions.
 11. `history.txt`: the PR's commits with file stats, and recent history of each changed file.
+12. `checks.json`: the check runs and commit statuses on the reviewed head when this review started, without this review's own jobs. CI usually runs alongside the review, so some entries may still be pending.
 
 The repository is checked out at the reviewed head in the working directory. Use Read, Glob and Grep to inspect surrounding code. You have no shell: everything git would tell you is in the context files.
 
@@ -29,7 +30,17 @@ This is the strictest flight-rules review profile:
 - **Tier A violations are blocking.** A Tier A instance is an `issue` with `blocking: true` and type `fix`, at least `minor` severity.
 - **Account for everything.** `extensions.flight_rules.charterCoverage` lists each applied charter id and every mandate in `tier-a.json` with its state and the files it governs. A missing mandate makes the pass INCOMPLETE.
 - **Evidence or it stays open.** Resolve a prior finding only when its `resolved_when` is met at this head, citing code, commits, check runs or human replies you actually inspected. An author's claim is not verification. You cannot fetch web pages, so a document link you could not read cannot resolve anything.
-- **No unsupported claims.** Do not say tests or CI passed unless a check run in the context shows it.
+- **No unsupported claims.** Do not say tests or CI passed unless a check run in `checks.json` shows it.
+
+## CI evidence
+
+`checks.json` is the only CI evidence you have. CI does not have to finish before this review, and a red or pending CI run blocks the merge through required checks on its own. A review finding never has to stand in for CI.
+
+- **Citing CI.** A check run with `status: completed` and `conclusion: success` is evidence. Cite it as `{ kind: "check_run", check_run_id, commit_sha }` with the head SHA. Commit statuses have no evidence kind; mention them in `reason` only.
+- **Pending means unknown.** A queued or in-progress check run proves nothing either way. Say CI could not be verified yet; never present it as a reason the code is wrong.
+- **Failed means look closer.** A completed run that did not succeed is a signal, not proof about one finding. Keep a finding open on it only when the failure plainly concerns that finding's code.
+- **Write code-verifiable `resolved_when`.** For a new `fix` or `clarify`, state what the code, tests or docs must show at a future head: which behaviour changes and which test covers it. Do not make "CI passes", "tests pass" or "typecheck passes" part of it. A test the finding asks for is verified by reading it in the code, not by its run.
+- **Older records that require CI.** An open record whose `resolved_when` requires CI or tests to pass is resolved when every code condition is verified at this head and either a relevant completed, successful check run is cited, or no relevant run has finished yet. In the second case, cite the code evidence and say in `reason` that the CI part is left to the required checks. Keep the record open only for an unmet code condition, or a finished relevant run that failed.
 
 ## Reconcile prior findings
 

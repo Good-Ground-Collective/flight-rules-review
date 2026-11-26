@@ -22,7 +22,7 @@ recovered findings     returns one JSON review object     publish findings, repl
                        (no GitHub writes, no edits)       REQUEST_CHANGES / dismiss / approve, exit code
 ```
 
-- **Gather.** Loads the PR, its diff (merge-base to head, so a stacked PR is reviewed only for its own changes), review threads and earlier finding records. Repository rules (`CODE-REVIEW.md`, `AGENTS.md`, `CLAUDE.md`, `CODEOWNERS`) are read from the default branch's commit, never from the PR head.
+- **Gather.** Loads the PR, its diff (merge-base to head, so a stacked PR is reviewed only for its own changes), review threads and earlier finding records. It also snapshots the head's check runs and commit statuses (excluding the review's own jobs), so the reviewer can cite a passed check run as evidence. Repository rules (`CODE-REVIEW.md`, `AGENTS.md`, `CLAUDE.md`, `CODEOWNERS`) are read from the default branch's commit, never from the PR head.
 - **Review.** [`anthropics/claude-code-action`](https://github.com/anthropics/claude-code-action) runs Claude with only Read, Glob and Grep: no shell at all. Git history the reviewer needs (the diff, the PR's commits, recent history of changed files) is precomputed into context files. The flight-rules transport schema is enforced as structured output and extended so `extensions.flight_rules` (charter coverage) is required.
 - **Post.** Validates the result with `reviewContract.parse`, then plans transitions with the flight-rules `EvidenceReviewPlanner` and `GitHubReviewVerifier`. It persists records in contract order and computes the outcome. The model's proposed outcome is never trusted on its own.
 
@@ -37,7 +37,7 @@ The flight-rules library and its docs are bundled into `dist/`, so callers need 
    | Pull requests | Read and write |
    | Issues | Read and write (the summary is a PR conversation comment) |
    | Contents | Read |
-   | Checks, Commit statuses | Read (evidence verification) |
+   | Checks, Commit statuses | Read (CI evidence for the reviewer, evidence verification, the approval gate) |
    | Metadata | Read |
 
    [`docs/github-app-manifest.json`](docs/github-app-manifest.json) has these settings for the manifest flow. Install the App on the repositories it should review.
@@ -48,6 +48,8 @@ The flight-rules library and its docs are bundled into `dist/`, so callers need 
    - secret `FLIGHT_RULES_REVIEW_PRIVATE_KEY`
 4. **Add the workflow.** Copy [`examples/flight-rules-review.yml`](examples/flight-rules-review.yml) to `.github/workflows/`. It reviews same-repository, non-draft PRs on every push. To review again after answering a question or a decision, re-run the PR's latest review run: it fetches fresh threads and updates the PR's `review` check. The action also accepts `issue_comment` events, refusing commenters without write access and fork PRs. A comment-triggered run doesn't update the PR head's check, though, and a workflow can't verify fork origin for comment events itself, so the example leaves comments out.
 5. **Optional: gate merges.** Require the `review` status check in a ruleset.
+
+The review runs alongside CI rather than after it, so CI is often still pending when the reviewer looks. The reviewer treats a pending check as unknown, writes `resolved_when` for code findings in terms of the code rather than CI results, and leaves pass/fail to your required checks. Require your CI checks in the same ruleset; the review doesn't need re-running when CI finishes.
 
 ## Inputs
 

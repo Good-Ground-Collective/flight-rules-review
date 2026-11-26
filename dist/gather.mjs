@@ -3,15 +3,17 @@ import {
   FileReviewPolicy,
   GatherInputSchema,
   GitHubClient,
+  checksContext,
   commenterAuthority,
   describePolicy,
   isHuman,
+  loadChecks,
   loadSnapshot,
   parseDecisionOwners,
   quotableJson,
   recoverState,
   reviewerSchema
-} from "./chunks/chunk-5SQOZLDW.mjs";
+} from "./chunks/chunk-T4TL6MUG.mjs";
 
 // src/gather.ts
 import { execFileSync } from "node:child_process";
@@ -249,6 +251,8 @@ ${source.contents}`)
       2
     )
   );
+  const checks = await loadChecks(client, repo, headSha, input.GITHUB_RUN_ID);
+  writeFileSync(join(contextDir, "checks.json"), JSON.stringify(checksContext(checks, headSha, (/* @__PURE__ */ new Date()).toISOString()), null, 2));
   writeFileSync(
     join(contextDir, "authority.md"),
     `${describePolicy(policy, pull.user.login)}
