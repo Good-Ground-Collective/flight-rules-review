@@ -3,22 +3,19 @@ name: flight-rules review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  issue_comment:
-    types: [created]
 
 permissions:
   contents: read
 
+concurrency:
+  group: flight-rules-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   review:
     if: >-
-      (github.event_name == 'pull_request' && !github.event.pull_request.draft
-      && github.event.pull_request.head.repo.full_name == github.repository)
-      || (github.event.issue.pull_request && (github.event.comment.body == '/flight-rules-review' || startsWith(github.event.comment.body, '/flight-rules-review '))
-      && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
-    concurrency:
-      group: flight-rules-review-${{ github.event.pull_request.number || github.event.issue.number }}
-      cancel-in-progress: true
+      !github.event.pull_request.draft
+      && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

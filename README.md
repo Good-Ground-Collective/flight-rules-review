@@ -46,7 +46,7 @@ The flight-rules library and its docs are bundled into `dist/`, so callers need 
    - secret `CLAUDE_CODE_OAUTH_TOKEN`
    - variable `FLIGHT_RULES_REVIEW_APP_ID` (the numeric App ID, passed as `app-id`; or pass the Client ID as `client-id`)
    - secret `FLIGHT_RULES_REVIEW_PRIVATE_KEY`
-4. **Add the workflow.** Copy [`examples/flight-rules-review.yml`](examples/flight-rules-review.yml) to `.github/workflows/`. It reviews same-repository PRs on every push, and re-runs when someone with write access comments `/flight-rules-review` (for example, after answering a question or a decision).
+4. **Add the workflow.** Copy [`examples/flight-rules-review.yml`](examples/flight-rules-review.yml) to `.github/workflows/`. It reviews same-repository, non-draft PRs on every push. To review again after answering a question or a decision, re-run the PR's latest review run: it fetches fresh threads and updates the PR's `review` check. The action also accepts `issue_comment` events, refusing commenters without write access and fork PRs. A comment-triggered run doesn't update the PR head's check, though, and a workflow can't verify fork origin for comment events itself, so the example leaves comments out.
 5. **Optional: gate merges.** Require the `review` status check in a ruleset.
 
 ## Inputs
@@ -81,7 +81,7 @@ Output: `outcome` is `APPROVED`, `CHANGES_NEEDED`, `ESCALATE` or `INCOMPLETE`, o
 
 ## Security
 
-- Runs only on same-repository PRs. Fork PRs are skipped, and the manual command requires write access.
+- Runs only on same-repository PRs; fork PRs are skipped. A skipped job counts as passing a required check, so pair a required `review` check with restricted fork contributions. Comment-triggered runs require write access.
 - The reviewer has no shell, no write tools and no network fetch. PR content is treated as data.
 - A summary whose state can't be read is never overwritten. An indexed finding whose marker is lost carries forward in the state, and every pass stays INCOMPLETE until it is repaired.
 - PRs above GitHub's 3,000-file listing limit end INCOMPLETE rather than being reviewed partially.
