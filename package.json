@@ -14,8 +14,10 @@
     "check": "npm run typecheck && npm test && npm run build && git diff --exit-code -- dist"
   },
   "devDependencies": {
+    "@semantic-release/exec": "7.1.0",
     "@types/node": "26.6.11",
     "esbuild": "0.28.2",
+    "semantic-release": "25.0.9",
     "typescript": "7.0.2",
     "vite": "8.3.8",
     "vitest": "5.1.2"
@@ -23,5 +25,29 @@
   "dependencies": {
     "@good-ground-collective/flight-rules": "3.0.0",
     "zod": "4.6.7"
+  },
+  "release": {
+    "branches": [
+      "main"
+    ],
+    "tagFormat": "v${version}",
+    "plugins": [
+      "@semantic-release/commit-analyzer",
+      "@semantic-release/release-notes-generator",
+      [
+        "@semantic-release/exec",
+        {
+          "successCmd": "echo \"version=${nextRelease.version}\" >> \"$GITHUB_OUTPUT\" && echo \"git-head=${nextRelease.gitHead}\" >> \"$GITHUB_OUTPUT\""
+        }
+      ],
+      [
+        "@semantic-release/github",
+        {
+          "successComment": false,
+          "failComment": false,
+          "releasedLabels": false
+        }
+      ]
+    ]
   }
 }
