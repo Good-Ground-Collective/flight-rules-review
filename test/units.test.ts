@@ -208,16 +208,16 @@ describe("GitHubClient", () => {
   });
 
   it.each([
-    ["a GET that failed with a 5xx", 502],
-    ["a request that was rate limited", 429],
-  ])("retries %s", async (_case, status) => {
+    ["a GET that failed with a 5xx", "GET", 502],
+    ["a POST that was rate limited", "POST", 429],
+  ] as const)("retries %s", async (_case, method, status) => {
     vi.useFakeTimers();
     const fetch = vi
       .fn()
       .mockResolvedValueOnce(new Response("busy", { status }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
     vi.stubGlobal("fetch", fetch);
-    const pending = client().get("/repos/o/r");
+    const pending = method === "GET" ? client().get("/repos/o/r") : client().write("POST", "/repos/o/r/issues/7/comments", { body: "x" });
     await vi.runAllTimersAsync();
     await expect(pending).resolves.toEqual({ ok: true });
     expect(fetch).toHaveBeenCalledTimes(2);
