@@ -39,6 +39,9 @@ jobs:
     needs: ci
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    concurrency:
+      group: release
+      cancel-in-progress: false
     permissions:
       contents: write
       packages: read
@@ -63,21 +66,31 @@ jobs:
 
       - name: Move the major tag
         run: |
-          latest="$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' HEAD 2>/dev/null)" || exit 0
+          latest="$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' HEAD 2>/dev/null)" || { echo "No vX.Y.Z tag on HEAD; nothing to move"; exit 0; }
           major="${latest%%.*}"
           sha="$(git rev-parse "$latest^{commit}")"
+
           ref="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$major" --jq '.object.type + " " + .object.sha' 2>/dev/null || true)"
           if [ -z "$ref" ]; then
             gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$major" -f sha="$sha" --silent
+            echo "Created $major at $sha ($latest)"
             exit 0
           fi
+
           current="${ref#* }"
           if [ "${ref%% *}" = tag ]; then
             current="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$current" --jq .object.sha)"
           fi
-          if [ "$current" = "$sha" ] || ! git merge-base --is-ancestor "$current" "$sha" 2>/dev/null; then
+
+          if [ "$current" = "$sha" ]; then
+            echo "$major already at $sha ($latest)"
+            exit 0
+          fi
+          if ! git merge-base --is-ancestor "$current" "$sha" 2>/dev/null; then
+            echo "$major is at $current, which is not an ancestor of $latest; not moving it backwards"
             exit 0
           fi
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$major" -f sha="$sha" -F force=true --silent
+          echo "Moved $major to $sha ($latest)"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
