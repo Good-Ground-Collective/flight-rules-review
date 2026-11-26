@@ -66,12 +66,18 @@ jobs:
           latest="$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' HEAD 2>/dev/null)" || exit 0
           major="${latest%%.*}"
           sha="$(git rev-parse "$latest^{commit}")"
-          current="$(git rev-parse -q --verify "refs/tags/$major^{commit}" || true)"
-          [ "$current" = "$sha" ] && exit 0
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$major" --silent 2>/dev/null; then
-            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$major" -f sha="$sha" -F force=true --silent
-          else
+          ref="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$major" --jq '.object.type + " " + .object.sha' 2>/dev/null || true)"
+          if [ -z "$ref" ]; then
             gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$major" -f sha="$sha" --silent
+            exit 0
           fi
+          current="${ref#* }"
+          if [ "${ref%% *}" = tag ]; then
+            current="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$current" --jq .object.sha)"
+          fi
+          if [ "$current" = "$sha" ] || ! git merge-base --is-ancestor "$current" "$sha" 2>/dev/null; then
+            exit 0
+          fi
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$major" -f sha="$sha" -F force=true --silent
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
