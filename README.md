@@ -44,7 +44,7 @@ The flight-rules library and its docs are bundled into `dist/`, so callers need 
 2. **Generate a Claude OAuth token** with `claude setup-token`.
 3. **Add the credentials** to the repository or organization:
    - secret `CLAUDE_CODE_OAUTH_TOKEN`
-   - variable `FLIGHT_RULES_REVIEW_CLIENT_ID` (the App's Client ID; a numeric App ID via `app-id` also works)
+   - variable `FLIGHT_RULES_REVIEW_APP_ID` (the numeric App ID, passed as `app-id`; or pass the Client ID as `client-id`)
    - secret `FLIGHT_RULES_REVIEW_PRIVATE_KEY`
 4. **Add the workflow.** Copy [`examples/flight-rules-review.yml`](examples/flight-rules-review.yml) to `.github/workflows/`. It reviews same-repository PRs on every push, and re-runs when someone with write access comments `/flight-rules-review` (for example, after answering a question or a decision).
 5. **Optional: gate merges.** Require the `review` status check in a ruleset.
