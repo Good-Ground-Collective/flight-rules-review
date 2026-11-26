@@ -6,8 +6,8 @@ import { checksFile, checksGreen, GitHubHeadChecks, ownRun, type CheckRun, type 
 import { commentableLines, hunkIndex, place } from "../src/diff.js";
 import { readStructuredOutput } from "../src/execution.js";
 import { gateExitCode } from "../src/gate.js";
-import { parseDecisionOwners } from "../src/inputs.js";
 import { GitHubClient, GitHubError } from "../src/github.js";
+import { parseDecisionOwners } from "../src/inputs.js";
 import { quotableJson, reviewerSchema, strictProblems } from "../src/strict.js";
 import { PATCH, snapshot } from "./fixtures.js";
 
