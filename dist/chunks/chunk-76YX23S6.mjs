@@ -28363,6 +28363,8 @@ function recoverState(snapshot, trustedIds) {
       unrecovered.push(entry);
       continue;
     }
+    const copies = (byId.get(entry.id) ?? []).length;
+    if (copies > 1) notes.push(`finding ${entry.id} has ${copies - 1} duplicate marker${copies === 2 ? "" : "s"} besides its indexed one`);
     if (located.record.status !== entry.status)
       notes.push(`finding ${entry.id} is ${located.record.status} in its marker but ${entry.status} in the index`);
     records.push(located);

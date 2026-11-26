@@ -78,6 +78,31 @@ function transitionReply(prior: FindingRecord, next: FindingRecord, entry: Prior
   return null;
 }
 
+/** The finding ID a comment's marker carries, or undefined when it has none or is unreadable. */
+function markerId(body: string | null): string | undefined {
+  try {
+    return codec.parseFinding(body ?? "")?.finding.id;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Threads to resolve for a closed finding: the thread at its indexed location plus every other unresolved
+ * thread whose root is a marker the app wrote for the same finding ID (a duplicate from an earlier post).
+ */
+export function threadsFor(snapshot: PullSnapshot, botId: number, findingId: string, location: RecordLocation): string[] {
+  const roots = new Set(
+    snapshot.reviewComments
+      .filter((comment) => comment.user?.id === botId && comment.in_reply_to_id === undefined && markerId(comment.body) === findingId)
+      .map((comment) => comment.id),
+  );
+  if (location.kind === "review_comment") roots.add(location.comment_id);
+  return snapshot.threads
+    .filter((thread) => !thread.isResolved && thread.rootCommentId !== null && roots.has(thread.rootCommentId))
+    .map((thread) => thread.id);
+}
+
 function inlineComment(placement: Extract<Placement, { kind: "inline" }>, body: string): Record<string, unknown> {
   return {
     path: placement.path,
@@ -200,22 +225,57 @@ export async function publish(input: PublishInput): Promise<PublishResult> {
     else body.push(record);
   }
 
-  const postFileLevel = async (record: FindingRecord, path: string): Promise<boolean> => {
+  // GitHub can answer a write with an error (a 422 "An internal error occurred, please try again", or a
+  // 5xx) after it created the review or comment. Before anything is reposted elsewhere, look for it:
+  // a blind retry publishes the same finding twice. `null` means the lookup failed, so nothing may be reposted.
+  const knownReviews = new Set(snapshot.reviews.map((review) => review.id));
+  const knownComments = new Set(snapshot.reviewComments.map((comment) => comment.id));
+  const landed = async <T>(what: string, path: string, match: (item: T) => boolean): Promise<T | undefined | null> => {
+    if (client.dryRun) return undefined;
     try {
-      const comment = await client.write<ReviewComment>("POST", `/repos/${repo}/pulls/${number}/comments`, {
+      return (await client.paginate<T>(path)).find(match);
+    } catch (error) {
+      input.log(`could not check whether the failed ${what} was created: ${(error as Error).message}`);
+      return null;
+    }
+  };
+  const landedReview = (body: string) =>
+    landed<Review>("review", `/repos/${repo}/pulls/${number}/reviews`, (review) =>
+      !knownReviews.has(review.id) && review.user?.id === input.botId && review.commit_id === headSha && (review.body ?? "").trim() === body.trim(),
+    );
+  const landedComment = (record: FindingRecord) =>
+    landed<ReviewComment>("comment", `/repos/${repo}/pulls/${number}/comments`, (comment) =>
+      !knownComments.has(comment.id) &&
+      comment.user?.id === input.botId &&
+      comment.in_reply_to_id === undefined &&
+      markerId(comment.body) === record.finding.id,
+    );
+
+  /** `unknown`: the post failed and whether it landed could not be checked, so it must not be reposted. */
+  const postFileLevel = async (record: FindingRecord, path: string): Promise<"posted" | "failed" | "unknown"> => {
+    let comment: ReviewComment | undefined;
+    try {
+      comment = await client.write<ReviewComment>("POST", `/repos/${repo}/pulls/${number}/comments`, {
         body: codec.render(record),
         commit_id: headSha,
         path,
         subject_type: "file",
       });
-      published.push({ record, location: { kind: "review_comment", comment_id: comment.id }, url: comment.html_url });
-      return true;
     } catch (error) {
-      input.log(`file-level comment for ${record.finding.id} failed, moving it to the review body: ${(error as Error).message}`);
-      return false;
+      const found = await landedComment(record);
+      if (found === null) return "unknown";
+      if (found === undefined) {
+        input.log(`file-level comment for ${record.finding.id} failed, moving it to the review body: ${(error as Error).message}`);
+        return "failed";
+      }
+      input.log(`file-level comment for ${record.finding.id} reported an error but was created: ${(error as Error).message}`);
+      comment = found;
     }
+    knownComments.add(comment.id);
+    published.push({ record, location: { kind: "review_comment", comment_id: comment.id }, url: comment.html_url });
+    return "posted";
   };
-  for (const { record, path } of fileLevel) if (!(await postFileLevel(record, path))) body.push(record);
+  for (const { record, path } of fileLevel) if ((await postFileLevel(record, path)) === "failed") body.push(record);
 
   const blocking = BLOCKING.includes(input.outcome);
   const event = blocking && input.requestChanges ? "REQUEST_CHANGES" : "COMMENT";
@@ -231,7 +291,10 @@ export async function publish(input: PublishInput): Promise<PublishResult> {
       if (!published.some((entry) => entry.record.finding.id === record.finding.id)) published.push({ record, location, url });
     };
     /** Posts chunks in order and stops at the first failure, so nothing already posted is replayed. */
-    const postChunks = async (comments: typeof inline, bodyRecords: FindingRecord[]): Promise<{ failed: number; error?: unknown }> => {
+    const postChunks = async (
+      comments: typeof inline,
+      bodyRecords: FindingRecord[],
+    ): Promise<{ failed: number; error?: unknown; unknown?: boolean }> => {
       const chunks = chunkBodies(header, bodyRecords.map((record) => codec.render(record)));
       if (chunks.length === 0) chunks.push(header);
       for (const [position, chunk] of chunks.entries()) {
@@ -244,8 +307,12 @@ export async function publish(input: PublishInput): Promise<PublishResult> {
             comments: position === 0 ? comments.map(({ record, placement }) => inlineComment(placement, codec.render(record))) : [],
           });
         } catch (error) {
-          return { failed: position, error };
+          const found = await landedReview(chunk);
+          if (found === null || found === undefined) return { failed: position, error, unknown: found === null };
+          input.log(`review ${found.id} was created although GitHub reported an error: ${(error as Error).message}`);
+          review = found;
         }
+        knownReviews.add(review.id);
         for (const record of bodyRecords)
           if (chunk.includes(`"id":"${record.finding.id}"`)) index(record, { kind: "review_body", review_id: review.id }, review.html_url);
         if (position === 0 && comments.length > 0) {
@@ -263,21 +330,26 @@ export async function publish(input: PublishInput): Promise<PublishResult> {
     };
 
     let attempt = await postChunks(inline, body);
-    // Only a rejected first chunk (nothing posted yet) is retried, with inline findings demoted.
-    if (attempt.failed === 0 && inline.length > 0 && attempt.error instanceof GitHubError && attempt.error.status === 422) {
+    // Only a rejected first chunk (nothing posted, confirmed by a lookup) is retried, with inline findings demoted.
+    if (
+      attempt.failed === 0 &&
+      attempt.unknown !== true &&
+      inline.length > 0 &&
+      attempt.error instanceof GitHubError &&
+      attempt.error.status === 422
+    ) {
       input.log(`inline review rejected (${attempt.error.detail}); retrying with file-level placement`);
       const demoted: FindingRecord[] = [...body];
-      for (const { record, placement } of inline) if (!(await postFileLevel(record, placement.path))) demoted.push(record);
+      for (const { record, placement } of inline) if ((await postFileLevel(record, placement.path)) === "failed") demoted.push(record);
       attempt = await postChunks([], demoted);
     }
     if (attempt.failed >= 0) problems.push(`could not submit the findings review: ${(attempt.error as Error).message}`);
   }
 
   for (const entry of published) {
-    const location = entry.location;
-    if (entry.record.status === "open" || location.kind !== "review_comment") continue;
-    const thread = snapshot.threads.find((candidate) => candidate.rootCommentId === location.comment_id);
-    if (thread !== undefined && !thread.isResolved) resolutions.push(thread.id);
+    if (entry.record.status === "open") continue;
+    for (const thread of threadsFor(snapshot, input.botId, entry.record.finding.id, entry.location))
+      if (!resolutions.includes(thread)) resolutions.push(thread);
   }
 
   const missing = fresh.filter(
