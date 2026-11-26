@@ -3,17 +3,17 @@ import {
   FileReviewPolicy,
   GatherInputSchema,
   GitHubClient,
-  checksContext,
+  GitHubHeadChecks,
+  checksFile,
   commenterAuthority,
   describePolicy,
   isHuman,
-  loadChecks,
   loadSnapshot,
   parseDecisionOwners,
   quotableJson,
   recoverState,
   reviewerSchema
-} from "./chunks/chunk-76YX23S6.mjs";
+} from "./chunks/chunk-3YVV26EW.mjs";
 
 // src/gather.ts
 import { execFileSync } from "node:child_process";
@@ -251,8 +251,14 @@ ${source.contents}`)
       2
     )
   );
-  const checks = await loadChecks(client, repo, headSha, input.GITHUB_RUN_ID);
-  writeFileSync(join(contextDir, "checks.json"), JSON.stringify(checksContext(checks, headSha, (/* @__PURE__ */ new Date()).toISOString()), null, 2));
+  let checks;
+  try {
+    checks = await new GitHubHeadChecks({ client, repo, runId: input.GITHUB_RUN_ID }).load(headSha);
+  } catch (error) {
+    console.log(`::warning::could not read CI state for the reviewer: ${error.message}`);
+    checks = error;
+  }
+  writeFileSync(join(contextDir, "checks.json"), JSON.stringify(checksFile(checks, headSha, (/* @__PURE__ */ new Date()).toISOString()), null, 2));
   writeFileSync(
     join(contextDir, "authority.md"),
     `${describePolicy(policy, pull.user.login)}

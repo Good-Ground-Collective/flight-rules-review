@@ -87,20 +87,30 @@ function markerId(body: string | null): string | undefined {
   }
 }
 
+/** Root comments the app wrote, by the finding ID their marker carries; each marker is parsed once. */
+export function markerRoots(snapshot: PullSnapshot, botId: number): Map<string, number[]> {
+  const roots = new Map<string, number[]>();
+  for (const comment of snapshot.reviewComments) {
+    if (comment.user?.id !== botId || comment.in_reply_to_id !== undefined) continue;
+    const id = markerId(comment.body);
+    if (id !== undefined) roots.set(id, [...(roots.get(id) ?? []), comment.id]);
+  }
+  return roots;
+}
+
 /**
  * Threads to resolve for a closed finding: the thread at its indexed location plus every other unresolved
  * thread whose root is a marker the app wrote for the same finding ID (a duplicate from an earlier post).
  */
-export function threadsFor(snapshot: PullSnapshot, botId: number, findingId: string, location: RecordLocation): string[] {
-  const roots = new Set(
-    snapshot.reviewComments
-      .filter((comment) => comment.user?.id === botId && comment.in_reply_to_id === undefined && markerId(comment.body) === findingId)
-      .map((comment) => comment.id),
-  );
-  if (location.kind === "review_comment") roots.add(location.comment_id);
-  return snapshot.threads
-    .filter((thread) => !thread.isResolved && thread.rootCommentId !== null && roots.has(thread.rootCommentId))
-    .map((thread) => thread.id);
+export function threadsFor(
+  threads: PullSnapshot["threads"],
+  roots: Map<string, number[]>,
+  findingId: string,
+  location: RecordLocation,
+): string[] {
+  const ids = new Set(roots.get(findingId) ?? []);
+  if (location.kind === "review_comment") ids.add(location.comment_id);
+  return threads.filter((thread) => !thread.isResolved && thread.rootCommentId !== null && ids.has(thread.rootCommentId)).map((thread) => thread.id);
 }
 
 function inlineComment(placement: Extract<Placement, { kind: "inline" }>, body: string): Record<string, unknown> {
@@ -225,12 +235,14 @@ export async function publish(input: PublishInput): Promise<PublishResult> {
     else body.push(record);
   }
 
-  // GitHub can answer a write with an error (a 422 "An internal error occurred, please try again", or a
-  // 5xx) after it created the review or comment. Before anything is reposted elsewhere, look for it:
-  // a blind retry publishes the same finding twice. `null` means the lookup failed, so nothing may be reposted.
   const knownReviews = new Set(snapshot.reviews.map((review) => review.id));
   const knownComments = new Set(snapshot.reviewComments.map((comment) => comment.id));
-  const landed = async <T>(what: string, path: string, match: (item: T) => boolean): Promise<T | undefined | null> => {
+  /**
+   * GitHub can answer a write with an error (a 422 "An internal error occurred, please try again", or a
+   * 5xx) after it created the review or comment, and reposting would publish the finding twice. Finds such
+   * an artifact; `null` means the lookup itself failed, so nothing may be reposted.
+   */
+  const findCreated = async <T>(what: string, path: string, match: (item: T) => boolean): Promise<T | undefined | null> => {
     if (client.dryRun) return undefined;
     try {
       return (await client.paginate<T>(path)).find(match);
@@ -239,12 +251,12 @@ export async function publish(input: PublishInput): Promise<PublishResult> {
       return null;
     }
   };
-  const landedReview = (body: string) =>
-    landed<Review>("review", `/repos/${repo}/pulls/${number}/reviews`, (review) =>
+  const findCreatedReview = (body: string) =>
+    findCreated<Review>("review", `/repos/${repo}/pulls/${number}/reviews`, (review) =>
       !knownReviews.has(review.id) && review.user?.id === input.botId && review.commit_id === headSha && (review.body ?? "").trim() === body.trim(),
     );
-  const landedComment = (record: FindingRecord) =>
-    landed<ReviewComment>("comment", `/repos/${repo}/pulls/${number}/comments`, (comment) =>
+  const findCreatedComment = (record: FindingRecord) =>
+    findCreated<ReviewComment>("comment", `/repos/${repo}/pulls/${number}/comments`, (comment) =>
       !knownComments.has(comment.id) &&
       comment.user?.id === input.botId &&
       comment.in_reply_to_id === undefined &&
@@ -262,7 +274,7 @@ export async function publish(input: PublishInput): Promise<PublishResult> {
         subject_type: "file",
       });
     } catch (error) {
-      const found = await landedComment(record);
+      const found = await findCreatedComment(record);
       if (found === null) return "unknown";
       if (found === undefined) {
         input.log(`file-level comment for ${record.finding.id} failed, moving it to the review body: ${(error as Error).message}`);
@@ -307,7 +319,7 @@ export async function publish(input: PublishInput): Promise<PublishResult> {
             comments: position === 0 ? comments.map(({ record, placement }) => inlineComment(placement, codec.render(record))) : [],
           });
         } catch (error) {
-          const found = await landedReview(chunk);
+          const found = await findCreatedReview(chunk);
           if (found === null || found === undefined) return { failed: position, error, unknown: found === null };
           input.log(`review ${found.id} was created although GitHub reported an error: ${(error as Error).message}`);
           review = found;
@@ -346,9 +358,10 @@ export async function publish(input: PublishInput): Promise<PublishResult> {
     if (attempt.failed >= 0) problems.push(`could not submit the findings review: ${(attempt.error as Error).message}`);
   }
 
+  const roots = markerRoots(snapshot, input.botId);
   for (const entry of published) {
     if (entry.record.status === "open") continue;
-    for (const thread of threadsFor(snapshot, input.botId, entry.record.finding.id, entry.location))
+    for (const thread of threadsFor(snapshot.threads, roots, entry.record.finding.id, entry.location))
       if (!resolutions.includes(thread)) resolutions.push(thread);
   }
 

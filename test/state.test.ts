@@ -265,6 +265,16 @@ describe("publish", () => {
     ]);
   });
 
+  it("neither moves nor reposts a failed file-level comment it cannot check", async () => {
+    const client = new FakeClient();
+    client.listingFails = true;
+    client.failOn = (method, path) => (path.endsWith("/pulls/7/comments") ? new GitHubError(502, method, path, "bad gateway") : undefined);
+    const result = await publish(base(client, { planned: [record({ line: 40 })], requestChanges: false }));
+    expect(client.writes).toEqual([]);
+    expect(result.records).toEqual([]);
+    expect(result.problems).toEqual(["new finding f-0123456789 was not published"]);
+  });
+
   it("keeps a file-level comment GitHub created despite reporting an error", async () => {
     const client = new FakeClient();
     client.landThenFail = (method, path) => (path.endsWith("/pulls/7/comments") ? new GitHubError(502, method, path, "bad gateway") : undefined);

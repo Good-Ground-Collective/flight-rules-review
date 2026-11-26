@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { EvidenceReviewPlanner, reviewContract } from "@good-ground-collective/flight-rules/review";
 import type { FindingRecord, PriorFinding, Review, ReviewOutcome, StoredFinding } from "@good-ground-collective/flight-rules/review";
 import { ActionReviewVerifier } from "./authority.js";
-import { checksGreen, loadChecks } from "./checks.js";
+import { checksGreen, GitHubHeadChecks } from "./checks.js";
 import { readStructuredOutput } from "./execution.js";
 import type { GatherState } from "./gather.js";
 import { gateExitCode } from "./gate.js";
@@ -142,7 +142,7 @@ async function main(): Promise<number> {
       problems.push("the PR head moved before the final gate review");
     } else {
       try {
-        const ci = input.APPROVE ? checksGreen(await loadChecks(client, repo, headSha, input.GITHUB_RUN_ID)) : { green: false, reason: "" };
+        const ci = input.APPROVE ? checksGreen(await new GitHubHeadChecks({ client, repo, runId: input.GITHUB_RUN_ID }).load(headSha)) : { green: false, reason: "" };
         if (input.APPROVE && !ci.green) log(`::notice::approval withheld until CI is green (${ci.reason}); dismissing the change request instead`);
         if (input.APPROVE && ci.green)
           await client.write("POST", `/repos/${repo}/pulls/${gathered.prNumber}/reviews`, {

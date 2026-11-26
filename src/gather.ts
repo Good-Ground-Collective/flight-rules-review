@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path";
 import { FileReviewPolicy } from "@good-ground-collective/flight-rules/review";
 import { commenterAuthority, describePolicy, type AuthorityPolicy } from "./authority.js";
-import { checksContext, loadChecks } from "./checks.js";
+import { checksFile, GitHubHeadChecks, type HeadChecks } from "./checks.js";
 import { GitHubClient } from "./github.js";
 import { GatherInputSchema, parseDecisionOwners } from "./inputs.js";
 import { isHuman, loadSnapshot, type GitHubUser, type PullSnapshot } from "./pull-request.js";
@@ -284,8 +284,14 @@ async function main(): Promise<void> {
       2,
     ),
   );
-  const checks = await loadChecks(client, repo, headSha, input.GITHUB_RUN_ID);
-  writeFileSync(join(contextDir, "checks.json"), JSON.stringify(checksContext(checks, headSha, new Date().toISOString()), null, 2));
+  let checks: HeadChecks | Error;
+  try {
+    checks = await new GitHubHeadChecks({ client, repo, runId: input.GITHUB_RUN_ID }).load(headSha);
+  } catch (error) {
+    console.log(`::warning::could not read CI state for the reviewer: ${(error as Error).message}`);
+    checks = error as Error;
+  }
+  writeFileSync(join(contextDir, "checks.json"), JSON.stringify(checksFile(checks, headSha, new Date().toISOString()), null, 2));
   writeFileSync(
     join(contextDir, "authority.md"),
     `${describePolicy(policy, pull.user.login)}\n\nCommenters:\n${authority

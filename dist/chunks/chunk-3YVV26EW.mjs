@@ -28063,57 +28063,145 @@ var ActionReviewVerifier = class {
 };
 
 // src/checks.ts
+var CheckRunWireSchema = external_exports.object({
+  id: external_exports.number(),
+  name: external_exports.string(),
+  status: external_exports.string(),
+  conclusion: external_exports.string().nullable(),
+  html_url: external_exports.string().nullable(),
+  details_url: external_exports.string().nullable(),
+  completed_at: external_exports.string().nullable(),
+  app: external_exports.object({ slug: external_exports.string() }).nullable()
+}).transform((run) => ({
+  id: run.id,
+  name: run.name,
+  status: run.status,
+  conclusion: run.conclusion,
+  htmlUrl: run.html_url,
+  detailsUrl: run.details_url,
+  completedAt: run.completed_at,
+  app: run.app?.slug ?? null
+}));
+var CheckRunPageWireSchema = external_exports.object({ total_count: external_exports.number(), check_runs: external_exports.array(CheckRunWireSchema) }).transform((page) => ({ totalCount: page.total_count, checkRuns: page.check_runs }));
+var CombinedStatusWireSchema = external_exports.object({
+  state: external_exports.string(),
+  total_count: external_exports.number(),
+  statuses: external_exports.array(
+    external_exports.object({ context: external_exports.string(), state: external_exports.string(), description: external_exports.string().nullable(), target_url: external_exports.string().nullable() }).transform((status) => ({ context: status.context, state: status.state, description: status.description, targetUrl: status.target_url }))
+  )
+}).transform((combined) => ({ state: combined.state, totalCount: combined.total_count, statuses: combined.statuses }));
+var GitHubHeadChecksPropsSchema = external_exports.object({
+  client: external_exports.custom((value) => typeof value === "object" && value !== null && "get" in value),
+  repo: external_exports.string().regex(/^[^/]+\/[^/]+$/),
+  /** This workflow run's id; its own jobs are left out. Empty keeps every run. */
+  runId: external_exports.string().default("")
+});
+var GitHubHeadChecks = class {
+  props;
+  constructor(props) {
+    this.props = GitHubHeadChecksPropsSchema.parse(props);
+  }
+  async load(sha) {
+    const { client, repo, runId } = this.props;
+    const runs = [];
+    for (let page = 1; ; page++) {
+      const { totalCount, checkRuns } = CheckRunPageWireSchema.parse(
+        await client.get(`/repos/${repo}/commits/${sha}/check-runs?per_page=100&page=${page}`)
+      );
+      runs.push(...checkRuns);
+      if (checkRuns.length === 0 || runs.length >= totalCount) break;
+    }
+    const status = CombinedStatusWireSchema.parse(await client.get(`/repos/${repo}/commits/${sha}/status?per_page=100`));
+    return { runs: runs.filter((run) => !ownRun(run, runId)), status };
+  }
+};
 var PASSED = ["success", "neutral", "skipped"];
 function ownRun(run, runId) {
-  return runId !== "" && (run.details_url?.includes(`/actions/runs/${runId}/`) ?? false);
-}
-async function loadChecks(client, repo, sha, runId) {
-  const runs = [];
-  for (let page = 1; ; page++) {
-    const { total_count: total, check_runs: batch } = await client.get(
-      `/repos/${repo}/commits/${sha}/check-runs?per_page=100&page=${page}`
-    );
-    runs.push(...batch);
-    if (batch.length === 0 || runs.length >= total) break;
-  }
-  const status = await client.get(`/repos/${repo}/commits/${sha}/status?per_page=100`);
-  return { runs: runs.filter((run) => !ownRun(run, runId)), status };
+  return runId !== "" && (run.detailsUrl?.includes(`/actions/runs/${runId}/`) ?? false);
 }
 function checksGreen(checks) {
   const pending = checks.runs.filter((run) => run.status !== "completed");
   if (pending.length > 0) return { green: false, reason: `${pending.map((run) => run.name).join(", ")} still running` };
   const failed = checks.runs.filter((run) => !PASSED.includes(run.conclusion ?? ""));
   if (failed.length > 0) return { green: false, reason: `${failed.map((run) => run.name).join(", ")} did not pass` };
-  if (checks.status.total_count > 0 && checks.status.state !== "success")
+  if (checks.status.totalCount > 0 && checks.status.state !== "success")
     return { green: false, reason: `commit status is ${checks.status.state}` };
   return { green: true, reason: "" };
 }
-function checksContext(checks, sha, fetchedAt) {
-  const pending = checks.runs.filter((run) => run.status !== "completed").length + checks.status.statuses.filter((s) => s.state === "pending").length;
-  return {
-    head_sha: sha,
-    fetched_at: fetchedAt,
+var ChecksFileSchema = external_exports.object({
+  headSha: external_exports.string(),
+  fetchedAt: external_exports.string(),
+  available: external_exports.boolean(),
+  note: external_exports.string(),
+  pending: external_exports.number(),
+  checkRuns: external_exports.array(
+    external_exports.object({
+      checkRunId: external_exports.number(),
+      name: external_exports.string(),
+      app: external_exports.string().nullable(),
+      status: external_exports.string(),
+      conclusion: external_exports.string().nullable(),
+      url: external_exports.string().nullable(),
+      completedAt: external_exports.string().nullable()
+    })
+  ),
+  commitStatus: external_exports.object({
+    state: external_exports.string(),
+    statuses: external_exports.array(external_exports.object({ context: external_exports.string(), state: external_exports.string(), description: external_exports.string().nullable(), url: external_exports.string().nullable() }))
+  })
+}).transform((file2) => ({
+  head_sha: file2.headSha,
+  fetched_at: file2.fetchedAt,
+  available: file2.available,
+  note: file2.note,
+  pending: file2.pending,
+  check_runs: file2.checkRuns.map((run) => ({
+    check_run_id: run.checkRunId,
+    name: run.name,
+    app: run.app,
+    status: run.status,
+    conclusion: run.conclusion,
+    url: run.url,
+    completed_at: run.completedAt
+  })),
+  commit_status: file2.commitStatus
+}));
+function checksFile(checks, sha, fetchedAt) {
+  if (checks instanceof Error)
+    return ChecksFileSchema.parse({
+      headSha: sha,
+      fetchedAt,
+      available: false,
+      note: `CI state could not be fetched (${checks.message}). Treat every CI outcome as unverified.`,
+      pending: 0,
+      checkRuns: [],
+      commitStatus: { state: "unknown", statuses: [] }
+    });
+  return ChecksFileSchema.parse({
+    headSha: sha,
+    fetchedAt,
+    available: true,
     note: "Snapshot taken before the review started; CI often runs alongside this review, so pending entries are normal. Only a check run with status completed and conclusion success can be cited, as check_run evidence with its check_run_id. This review's own jobs are excluded.",
-    pending,
-    check_runs: checks.runs.map((run) => ({
-      check_run_id: run.id,
+    pending: checks.runs.filter((run) => run.status !== "completed").length + checks.status.statuses.filter((status) => status.state === "pending").length,
+    checkRuns: checks.runs.map((run) => ({
+      checkRunId: run.id,
       name: run.name,
-      app: run.app?.slug ?? null,
+      app: run.app,
       status: run.status,
       conclusion: run.conclusion,
-      url: run.html_url ?? run.details_url,
-      completed_at: run.completed_at
+      url: run.htmlUrl ?? run.detailsUrl,
+      completedAt: run.completedAt
     })),
-    commit_status: {
-      state: checks.status.total_count > 0 ? checks.status.state : "none",
+    commitStatus: {
+      state: checks.status.totalCount > 0 ? checks.status.state : "none",
       statuses: checks.status.statuses.map((status) => ({
         context: status.context,
         state: status.state,
         description: status.description,
-        url: status.target_url
+        url: status.targetUrl
       }))
     }
-  };
+  });
 }
 
 // src/github.ts
@@ -28196,7 +28284,7 @@ var GitHubClient = class {
         body: body === void 0 ? void 0 : JSON.stringify(body)
       });
       if (response.ok) return response;
-      const retryable = response.status >= 500 || response.status === 429;
+      const retryable = response.status === 429 || response.status >= 500 && method !== "POST";
       if (retryable && attempt < 2) {
         await new Promise((resolve2) => setTimeout(resolve2, 1e3 * 2 ** attempt));
         continue;
@@ -28455,9 +28543,9 @@ export {
   describePolicy,
   commenterAuthority,
   ActionReviewVerifier,
-  loadChecks,
+  GitHubHeadChecks,
   checksGreen,
-  checksContext,
+  checksFile,
   GitHubError,
   GitHubClient,
   parseDecisionOwners,

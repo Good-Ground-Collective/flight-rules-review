@@ -5,16 +5,16 @@ import {
   FlightRulesExtensionSchema,
   GitHubClient,
   GitHubError,
+  GitHubHeadChecks,
   JsonReviewCodec,
   PostInputSchema,
   SUMMARY_MARKER,
   checksGreen,
-  loadChecks,
   loadPull,
   loadSnapshot,
   reviewContract,
   strictProblems
-} from "./chunks/chunk-76YX23S6.mjs";
+} from "./chunks/chunk-3YVV26EW.mjs";
 
 // src/post.ts
 import { appendFileSync, readFileSync as readFileSync2 } from "node:fs";
@@ -148,12 +148,19 @@ function markerId(body) {
     return void 0;
   }
 }
-function threadsFor(snapshot, botId, findingId, location) {
-  const roots = new Set(
-    snapshot.reviewComments.filter((comment) => comment.user?.id === botId && comment.in_reply_to_id === void 0 && markerId(comment.body) === findingId).map((comment) => comment.id)
-  );
-  if (location.kind === "review_comment") roots.add(location.comment_id);
-  return snapshot.threads.filter((thread) => !thread.isResolved && thread.rootCommentId !== null && roots.has(thread.rootCommentId)).map((thread) => thread.id);
+function markerRoots(snapshot, botId) {
+  const roots = /* @__PURE__ */ new Map();
+  for (const comment of snapshot.reviewComments) {
+    if (comment.user?.id !== botId || comment.in_reply_to_id !== void 0) continue;
+    const id = markerId(comment.body);
+    if (id !== void 0) roots.set(id, [...roots.get(id) ?? [], comment.id]);
+  }
+  return roots;
+}
+function threadsFor(threads, roots, findingId, location) {
+  const ids = new Set(roots.get(findingId) ?? []);
+  if (location.kind === "review_comment") ids.add(location.comment_id);
+  return threads.filter((thread) => !thread.isResolved && thread.rootCommentId !== null && ids.has(thread.rootCommentId)).map((thread) => thread.id);
 }
 function inlineComment(placement, body) {
   return {
@@ -267,7 +274,7 @@ ${update.reply}`
   }
   const knownReviews = new Set(snapshot.reviews.map((review) => review.id));
   const knownComments = new Set(snapshot.reviewComments.map((comment) => comment.id));
-  const landed = async (what, path, match) => {
+  const findCreated = async (what, path, match) => {
     if (client.dryRun) return void 0;
     try {
       return (await client.paginate(path)).find(match);
@@ -276,12 +283,12 @@ ${update.reply}`
       return null;
     }
   };
-  const landedReview = (body2) => landed(
+  const findCreatedReview = (body2) => findCreated(
     "review",
     `/repos/${repo}/pulls/${number}/reviews`,
     (review) => !knownReviews.has(review.id) && review.user?.id === input.botId && review.commit_id === headSha && (review.body ?? "").trim() === body2.trim()
   );
-  const landedComment = (record) => landed(
+  const findCreatedComment = (record) => findCreated(
     "comment",
     `/repos/${repo}/pulls/${number}/comments`,
     (comment) => !knownComments.has(comment.id) && comment.user?.id === input.botId && comment.in_reply_to_id === void 0 && markerId(comment.body) === record.finding.id
@@ -296,7 +303,7 @@ ${update.reply}`
         subject_type: "file"
       });
     } catch (error) {
-      const found = await landedComment(record);
+      const found = await findCreatedComment(record);
       if (found === null) return "unknown";
       if (found === void 0) {
         input.log(`file-level comment for ${record.finding.id} failed, moving it to the review body: ${error.message}`);
@@ -334,7 +341,7 @@ ${update.reply}`
             comments: position === 0 ? comments.map(({ record, placement }) => inlineComment(placement, codec.render(record))) : []
           });
         } catch (error) {
-          const found = await landedReview(chunk);
+          const found = await findCreatedReview(chunk);
           if (found === null || found === void 0) return { failed: position, error, unknown: found === null };
           input.log(`review ${found.id} was created although GitHub reported an error: ${error.message}`);
           review = found;
@@ -362,9 +369,10 @@ ${update.reply}`
     }
     if (attempt.failed >= 0) problems.push(`could not submit the findings review: ${attempt.error.message}`);
   }
+  const roots = markerRoots(snapshot, input.botId);
   for (const entry of published) {
     if (entry.record.status === "open") continue;
-    for (const thread of threadsFor(snapshot, input.botId, entry.record.finding.id, entry.location))
+    for (const thread of threadsFor(snapshot.threads, roots, entry.record.finding.id, entry.location))
       if (!resolutions.includes(thread)) resolutions.push(thread);
   }
   const missing = fresh.filter(
@@ -664,7 +672,7 @@ async function main() {
       problems.push("the PR head moved before the final gate review");
     } else {
       try {
-        const ci = input.APPROVE ? checksGreen(await loadChecks(client, repo, headSha, input.GITHUB_RUN_ID)) : { green: false, reason: "" };
+        const ci = input.APPROVE ? checksGreen(await new GitHubHeadChecks({ client, repo, runId: input.GITHUB_RUN_ID }).load(headSha)) : { green: false, reason: "" };
         if (input.APPROVE && !ci.green) log(`::notice::approval withheld until CI is green (${ci.reason}); dismissing the change request instead`);
         if (input.APPROVE && ci.green)
           await client.write("POST", `/repos/${repo}/pulls/${gathered.prNumber}/reviews`, {
