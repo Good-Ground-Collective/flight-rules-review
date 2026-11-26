@@ -196,13 +196,30 @@ describe("head checks", () => {
 describe("GitHubClient", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
+  const client = () => new GitHubClient({ token: "t", apiUrl: "https://api.test", graphqlUrl: "https://api.test/graphql" });
 
   it("sends a POST that failed with a 5xx only once, since it may have been applied", async () => {
     const fetch = vi.fn(async () => new Response("bad gateway", { status: 502 }));
     vi.stubGlobal("fetch", fetch);
-    const client = new GitHubClient({ token: "t", apiUrl: "https://api.test", graphqlUrl: "https://api.test/graphql" });
-    await expect(client.write("POST", "/repos/o/r/pulls/7/reviews", { body: "x" })).rejects.toBeInstanceOf(GitHubError);
+    await expect(client().write("POST", "/repos/o/r/pulls/7/reviews", { body: "x" })).rejects.toBeInstanceOf(GitHubError);
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["a GET that failed with a 5xx", 502],
+    ["a request that was rate limited", 429],
+  ])("retries %s", async (_case, status) => {
+    vi.useFakeTimers();
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("busy", { status }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+    const pending = client().get("/repos/o/r");
+    await vi.runAllTimersAsync();
+    await expect(pending).resolves.toEqual({ ok: true });
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 });

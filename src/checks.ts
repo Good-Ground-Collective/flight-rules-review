@@ -71,6 +71,7 @@ export class GitHubHeadChecks implements HeadChecksSource {
 
   async load(sha: string): Promise<HeadChecks> {
     const { client, repo, runId } = this.props;
+
     const runs: CheckRun[] = [];
     for (let page = 1; ; page++) {
       const { totalCount, checkRuns } = CheckRunPageWireSchema.parse(
@@ -79,7 +80,9 @@ export class GitHubHeadChecks implements HeadChecksSource {
       runs.push(...checkRuns);
       if (checkRuns.length === 0 || runs.length >= totalCount) break;
     }
+
     const status = CombinedStatusWireSchema.parse(await client.get(`/repos/${repo}/commits/${sha}/status?per_page=100`));
+
     return { runs: runs.filter((run) => !ownRun(run, runId)), status };
   }
 }
