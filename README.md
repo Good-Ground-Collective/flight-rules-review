@@ -44,7 +44,7 @@ The flight-rules library and its docs are bundled into `dist/`, so callers need 
 2. **Generate a Claude OAuth token** with `claude setup-token`.
 3. **Add the credentials** to the repository or organization:
    - secret `CLAUDE_CODE_OAUTH_TOKEN`
-   - variable `FLIGHT_RULES_REVIEW_APP_ID`
+   - variable `FLIGHT_RULES_REVIEW_CLIENT_ID` (the App's Client ID; a numeric App ID via `app-id` also works)
    - secret `FLIGHT_RULES_REVIEW_PRIVATE_KEY`
 4. **Add the workflow.** Copy [`examples/flight-rules-review.yml`](examples/flight-rules-review.yml) to `.github/workflows/`. It reviews same-repository PRs on every push, and re-runs when someone with write access comments `/flight-rules-review` (for example, after answering a question or a decision).
 5. **Optional: gate merges.** Require the `review` status check in a ruleset.
@@ -54,7 +54,7 @@ The flight-rules library and its docs are bundled into `dist/`, so callers need 
 | Input | Default | Description |
 | --- | --- | --- |
 | `claude-code-oauth-token` | required | Claude Code OAuth token. |
-| `app-id`, `app-private-key` | required | The posting GitHub App. |
+| `client-id` (or `app-id`), `app-private-key` | required | The posting GitHub App. `client-id` is preferred; `app-id` still works but is deprecated upstream. |
 | `pr-number` | from the event | PR to review. |
 | `model` | `claude-opus-5-5` | Reviewer model. |
 | `max-turns` | `100` | Reviewer turn budget. |

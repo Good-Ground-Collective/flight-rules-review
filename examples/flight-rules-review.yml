@@ -6,18 +6,19 @@ on:
   issue_comment:
     types: [created]
 
-concurrency:
-  group: flight-rules-review-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: true
-
 permissions:
   contents: read
 
 jobs:
   review:
     if: >-
-      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
-      || (github.event.issue.pull_request && startsWith(github.event.comment.body, '/flight-rules-review'))
+      (github.event_name == 'pull_request' && !github.event.pull_request.draft
+      && github.event.pull_request.head.repo.full_name == github.repository)
+      || (github.event.issue.pull_request && startsWith(github.event.comment.body, '/flight-rules-review')
+      && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+    concurrency:
+      group: flight-rules-review-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

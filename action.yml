@@ -9,9 +9,14 @@ inputs:
   claude-code-oauth-token:
     description: Claude Code OAuth token from `claude setup-token`.
     required: true
+  client-id:
+    description: Client ID of the GitHub App that posts the review (preferred over app-id).
+    required: false
+    default: ''
   app-id:
-    description: Client ID or App ID of the GitHub App that posts the review.
-    required: true
+    description: Numeric App ID of that GitHub App; deprecated upstream in favour of client-id.
+    required: false
+    default: ''
   app-private-key:
     description: Private key of that GitHub App.
     required: true
@@ -79,7 +84,8 @@ runs:
       id: app_token
       uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
       with:
-        app-id: ${{ inputs.app-id }}
+        client-id: ${{ inputs.client-id }}
+        app-id: ${{ inputs.client-id == '' && inputs.app-id || '' }}
         private-key: ${{ inputs.app-private-key }}
         owner: ${{ github.repository_owner }}
         repositories: ${{ github.event.repository.name }}
