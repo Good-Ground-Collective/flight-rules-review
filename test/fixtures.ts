@@ -1,5 +1,6 @@
 import { JsonReviewCodec } from "@good-ground-collective/flight-rules/review";
 import type { FindingRecord } from "@good-ground-collective/flight-rules/review";
+import { GitHubError } from "../src/github.js";
 import type { PullSnapshot } from "../src/pull-request.js";
 
 export const HEAD = "a".repeat(40);
@@ -71,6 +72,25 @@ export function findingComment(id: number, rec: FindingRecord, user = BOT) {
   };
 }
 
+/**
+ * GitHub REST wire payloads for what the fake creates, snake_case as the API returns them. Every
+ * snake_case key the fake produces comes from here.
+ */
+const wire = {
+  url: (anchor: string) => ({ html_url: `https://github.com/o/r/pull/7#${anchor}` }),
+  comment: (id: number, body: string) => ({ id, body, user: BOT, ...wire.url(`discussion_r${id}`) }),
+  review: (id: number, posted: { body: string; commit_id: string; event: string }) => ({
+    id,
+    body: posted.body,
+    user: BOT,
+    commit_id: posted.commit_id,
+    state: posted.event,
+    ...wire.url(`x${id}`),
+  }),
+};
+type WireComment = ReturnType<typeof wire.comment>;
+type WireReview = ReturnType<typeof wire.review>;
+
 /** Records every write and answers with incrementing ids. */
 export class FakeClient {
   writes: { method: string; path: string; body: unknown }[] = [];
@@ -78,12 +98,23 @@ export class FakeClient {
   private next = 5000;
   dryRun = false;
   failOn?: (method: string, path: string, body: unknown) => Error | undefined;
-  reviewComments: Record<number, { id: number; body: string; html_url: string }[]> = {};
+  /** Like failOn, but the write takes effect before the error is thrown, as GitHub sometimes does. */
+  landThenFail?: (method: string, path: string, body: unknown) => Error | undefined;
+  /** Makes listing the PR's reviews and comments fail. */
+  listingFails = false;
+  reviewComments: Record<number, WireComment[]> = {};
+  /** Reviews and root review comments created through `write`, as the PR listings return them. */
+  reviews: WireReview[] = [];
+  comments: WireComment[] = [];
 
   async get(): Promise<never> {
     throw new Error("unexpected get");
   }
   async paginate<T>(path: string): Promise<T[]> {
+    if (/\/pulls\/\d+\/(reviews|comments)$/.test(path)) {
+      if (this.listingFails) throw new GitHubError(502, "GET", path, "bad gateway");
+      return (path.endsWith("/reviews") ? this.reviews : this.comments) as T[];
+    }
     const id = Number(/reviews\/(\d+)\/comments/.exec(path)?.[1]);
     return (this.reviewComments[id] ?? []) as T[];
   }
@@ -93,14 +124,17 @@ export class FakeClient {
     this.writes.push({ method, path, body });
     const id = this.next++;
     if (method === "POST" && path.endsWith("/reviews")) {
-      const comments = ((body as { comments?: { body: string }[] }).comments ?? []).map((comment, offset) => ({
-        id: id * 10 + offset,
-        body: comment.body,
-        html_url: `https://github.com/o/r/pull/7#discussion_r${id * 10 + offset}`,
-      }));
+      const posted = body as Parameters<typeof wire.review>[1] & { comments?: { body: string }[] };
+      const comments = (posted.comments ?? []).map((comment, offset) => wire.comment(id * 10 + offset, comment.body));
       this.reviewComments[id] = comments;
+      this.comments.push(...comments);
+      this.reviews.push(wire.review(id, posted));
+    } else if (method === "POST" && /\/pulls\/\d+\/comments$/.test(path)) {
+      this.comments.push(wire.comment(id, (body as { body: string }).body));
     }
-    return { id, html_url: `https://github.com/o/r/pull/7#x${id}` } as T;
+    const late = this.landThenFail?.(method, path, body);
+    if (late) throw late;
+    return { id, ...wire.url(`x${id}`) } as T;
   }
   async writeGraphql(_query: string, variables: Record<string, unknown>): Promise<undefined> {
     this.graphqlWrites.push(variables);

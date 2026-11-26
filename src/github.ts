@@ -92,7 +92,8 @@ export class GitHubClient {
         body: body === undefined ? undefined : JSON.stringify(body),
       });
       if (response.ok) return response;
-      const retryable = response.status >= 500 || response.status === 429;
+      // A POST that got a 5xx may have been applied anyway; re-sending it could publish a duplicate.
+      const retryable = response.status === 429 || (response.status >= 500 && method !== "POST");
       if (retryable && attempt < 2) {
         await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
         continue;

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { EvidenceReviewPlanner, reviewContract } from "@good-ground-collective/flight-rules/review";
 import type { FindingRecord, PriorFinding, Review, ReviewOutcome, StoredFinding } from "@good-ground-collective/flight-rules/review";
 import { ActionReviewVerifier } from "./authority.js";
+import { checksGreen, GitHubHeadChecks } from "./checks.js";
 import { readStructuredOutput } from "./execution.js";
 import type { GatherState } from "./gather.js";
 import { gateExitCode } from "./gate.js";
@@ -12,21 +13,6 @@ import { activeChangesRequested, publish, resolveThreads } from "./publish.js";
 import { loadPull, loadSnapshot } from "./pull-request.js";
 import { FlightRulesExtensionSchema, strictProblems } from "./strict.js";
 import { informationalEntries, renderSummary, type PublishedRecord } from "./summary.js";
-
-/** True when every check and status on the head, other than this run's own jobs, has passed. */
-async function requiredChecksGreen(client: GitHubClient, repo: string, sha: string, runId: string): Promise<{ green: boolean; reason: string }> {
-  const { check_runs: runs } = await client.get<{ check_runs: { name: string; status: string; conclusion: string | null; details_url: string | null }[] }>(
-    `/repos/${repo}/commits/${sha}/check-runs?per_page=100`,
-  );
-  const others = runs.filter((run) => !(runId && run.details_url?.includes(`/actions/runs/${runId}/`)));
-  const pending = others.filter((run) => run.status !== "completed");
-  if (pending.length > 0) return { green: false, reason: `${pending.map((run) => run.name).join(", ")} still running` };
-  const failed = others.filter((run) => !["success", "neutral", "skipped"].includes(run.conclusion ?? ""));
-  if (failed.length > 0) return { green: false, reason: `${failed.map((run) => run.name).join(", ")} did not pass` };
-  const status = await client.get<{ state: string; total_count: number }>(`/repos/${repo}/commits/${sha}/status`);
-  if (status.total_count > 0 && status.state !== "success") return { green: false, reason: `commit status is ${status.state}` };
-  return { green: true, reason: "" };
-}
 
 async function main(): Promise<number> {
   const input = PostInputSchema.parse(process.env);
@@ -156,7 +142,7 @@ async function main(): Promise<number> {
       problems.push("the PR head moved before the final gate review");
     } else {
       try {
-        const ci = input.APPROVE ? await requiredChecksGreen(client, repo, headSha, input.GITHUB_RUN_ID) : { green: false, reason: "" };
+        const ci = input.APPROVE ? checksGreen(await new GitHubHeadChecks({ client, repo, runId: input.GITHUB_RUN_ID }).load(headSha)) : { green: false, reason: "" };
         if (input.APPROVE && !ci.green) log(`::notice::approval withheld until CI is green (${ci.reason}); dismissing the change request instead`);
         if (input.APPROVE && ci.green)
           await client.write("POST", `/repos/${repo}/pulls/${gathered.prNumber}/reviews`, {

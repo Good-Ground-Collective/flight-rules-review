@@ -5,14 +5,16 @@ import {
   FlightRulesExtensionSchema,
   GitHubClient,
   GitHubError,
+  GitHubHeadChecks,
   JsonReviewCodec,
   PostInputSchema,
   SUMMARY_MARKER,
+  checksGreen,
   loadPull,
   loadSnapshot,
   reviewContract,
   strictProblems
-} from "./chunks/chunk-5SQOZLDW.mjs";
+} from "./chunks/chunk-3YVV26EW.mjs";
 
 // src/post.ts
 import { appendFileSync, readFileSync as readFileSync2 } from "node:fs";
@@ -139,6 +141,27 @@ ${previous}
   if (entry?.status === "still_open" && entry.reply) return entry.reply;
   return null;
 }
+function markerId(body) {
+  try {
+    return codec.parseFinding(body ?? "")?.finding.id;
+  } catch {
+    return void 0;
+  }
+}
+function markerRoots(snapshot, botId) {
+  const roots = /* @__PURE__ */ new Map();
+  for (const comment of snapshot.reviewComments) {
+    if (comment.user?.id !== botId || comment.in_reply_to_id !== void 0) continue;
+    const id = markerId(comment.body);
+    if (id !== void 0) roots.set(id, [...roots.get(id) ?? [], comment.id]);
+  }
+  return roots;
+}
+function threadsFor(threads, roots, findingId, location) {
+  const ids = new Set(roots.get(findingId) ?? []);
+  if (location.kind === "review_comment") ids.add(location.comment_id);
+  return threads.filter((thread) => !thread.isResolved && thread.rootCommentId !== null && ids.has(thread.rootCommentId)).map((thread) => thread.id);
+}
 function inlineComment(placement, body) {
   return {
     path: placement.path,
@@ -249,22 +272,51 @@ ${update.reply}`
     else if (placement.kind === "file") fileLevel.push({ record, path: placement.path });
     else body.push(record);
   }
-  const postFileLevel = async (record, path) => {
+  const knownReviews = new Set(snapshot.reviews.map((review) => review.id));
+  const knownComments = new Set(snapshot.reviewComments.map((comment) => comment.id));
+  const findCreated = async (what, path, match) => {
+    if (client.dryRun) return void 0;
     try {
-      const comment = await client.write("POST", `/repos/${repo}/pulls/${number}/comments`, {
+      return (await client.paginate(path)).find(match);
+    } catch (error) {
+      input.log(`could not check whether the failed ${what} was created: ${error.message}`);
+      return null;
+    }
+  };
+  const findCreatedReview = (body2) => findCreated(
+    "review",
+    `/repos/${repo}/pulls/${number}/reviews`,
+    (review) => !knownReviews.has(review.id) && review.user?.id === input.botId && review.commit_id === headSha && (review.body ?? "").trim() === body2.trim()
+  );
+  const findCreatedComment = (record) => findCreated(
+    "comment",
+    `/repos/${repo}/pulls/${number}/comments`,
+    (comment) => !knownComments.has(comment.id) && comment.user?.id === input.botId && comment.in_reply_to_id === void 0 && markerId(comment.body) === record.finding.id
+  );
+  const postFileLevel = async (record, path) => {
+    let comment;
+    try {
+      comment = await client.write("POST", `/repos/${repo}/pulls/${number}/comments`, {
         body: codec.render(record),
         commit_id: headSha,
         path,
         subject_type: "file"
       });
-      published.push({ record, location: { kind: "review_comment", comment_id: comment.id }, url: comment.html_url });
-      return true;
     } catch (error) {
-      input.log(`file-level comment for ${record.finding.id} failed, moving it to the review body: ${error.message}`);
-      return false;
+      const found = await findCreatedComment(record);
+      if (found === null) return "unknown";
+      if (found === void 0) {
+        input.log(`file-level comment for ${record.finding.id} failed, moving it to the review body: ${error.message}`);
+        return "failed";
+      }
+      input.log(`file-level comment for ${record.finding.id} reported an error but was created: ${error.message}`);
+      comment = found;
     }
+    knownComments.add(comment.id);
+    published.push({ record, location: { kind: "review_comment", comment_id: comment.id }, url: comment.html_url });
+    return "posted";
   };
-  for (const { record, path } of fileLevel) if (!await postFileLevel(record, path)) body.push(record);
+  for (const { record, path } of fileLevel) if (await postFileLevel(record, path) === "failed") body.push(record);
   const blocking = BLOCKING.includes(input.outcome);
   const event = blocking && input.requestChanges ? "REQUEST_CHANGES" : "COMMENT";
   const needsGateReview = blocking && input.requestChanges && activeChangesRequested(snapshot.reviews, input.botId).length === 0;
@@ -289,8 +341,12 @@ ${update.reply}`
             comments: position === 0 ? comments.map(({ record, placement }) => inlineComment(placement, codec.render(record))) : []
           });
         } catch (error) {
-          return { failed: position, error };
+          const found = await findCreatedReview(chunk);
+          if (found === null || found === void 0) return { failed: position, error, unknown: found === null };
+          input.log(`review ${found.id} was created although GitHub reported an error: ${error.message}`);
+          review = found;
         }
+        knownReviews.add(review.id);
         for (const record of bodyRecords)
           if (chunk.includes(`"id":"${record.finding.id}"`)) index(record, { kind: "review_body", review_id: review.id }, review.html_url);
         if (position === 0 && comments.length > 0) {
@@ -305,19 +361,19 @@ ${update.reply}`
       return { failed: -1 };
     };
     let attempt = await postChunks(inline, body);
-    if (attempt.failed === 0 && inline.length > 0 && attempt.error instanceof GitHubError && attempt.error.status === 422) {
+    if (attempt.failed === 0 && attempt.unknown !== true && inline.length > 0 && attempt.error instanceof GitHubError && attempt.error.status === 422) {
       input.log(`inline review rejected (${attempt.error.detail}); retrying with file-level placement`);
       const demoted = [...body];
-      for (const { record, placement } of inline) if (!await postFileLevel(record, placement.path)) demoted.push(record);
+      for (const { record, placement } of inline) if (await postFileLevel(record, placement.path) === "failed") demoted.push(record);
       attempt = await postChunks([], demoted);
     }
     if (attempt.failed >= 0) problems.push(`could not submit the findings review: ${attempt.error.message}`);
   }
+  const roots = markerRoots(snapshot, input.botId);
   for (const entry of published) {
-    const location = entry.location;
-    if (entry.record.status === "open" || location.kind !== "review_comment") continue;
-    const thread = snapshot.threads.find((candidate) => candidate.rootCommentId === location.comment_id);
-    if (thread !== void 0 && !thread.isResolved) resolutions.push(thread.id);
+    if (entry.record.status === "open") continue;
+    for (const thread of threadsFor(snapshot.threads, roots, entry.record.finding.id, entry.location))
+      if (!resolutions.includes(thread)) resolutions.push(thread);
   }
   const missing = fresh.filter(
     (record) => !published.some((entry) => entry.record.finding.id === record.finding.id)
@@ -495,19 +551,6 @@ function renderSummary(input) {
 }
 
 // src/post.ts
-async function requiredChecksGreen(client, repo, sha, runId) {
-  const { check_runs: runs } = await client.get(
-    `/repos/${repo}/commits/${sha}/check-runs?per_page=100`
-  );
-  const others = runs.filter((run) => !(runId && run.details_url?.includes(`/actions/runs/${runId}/`)));
-  const pending = others.filter((run) => run.status !== "completed");
-  if (pending.length > 0) return { green: false, reason: `${pending.map((run) => run.name).join(", ")} still running` };
-  const failed = others.filter((run) => !["success", "neutral", "skipped"].includes(run.conclusion ?? ""));
-  if (failed.length > 0) return { green: false, reason: `${failed.map((run) => run.name).join(", ")} did not pass` };
-  const status = await client.get(`/repos/${repo}/commits/${sha}/status`);
-  if (status.total_count > 0 && status.state !== "success") return { green: false, reason: `commit status is ${status.state}` };
-  return { green: true, reason: "" };
-}
 async function main() {
   const input = PostInputSchema.parse(process.env);
   const repo = input.GITHUB_REPOSITORY;
@@ -629,7 +672,7 @@ async function main() {
       problems.push("the PR head moved before the final gate review");
     } else {
       try {
-        const ci = input.APPROVE ? await requiredChecksGreen(client, repo, headSha, input.GITHUB_RUN_ID) : { green: false, reason: "" };
+        const ci = input.APPROVE ? checksGreen(await new GitHubHeadChecks({ client, repo, runId: input.GITHUB_RUN_ID }).load(headSha)) : { green: false, reason: "" };
         if (input.APPROVE && !ci.green) log(`::notice::approval withheld until CI is green (${ci.reason}); dismissing the change request instead`);
         if (input.APPROVE && ci.green)
           await client.write("POST", `/repos/${repo}/pulls/${gathered.prNumber}/reviews`, {

@@ -41,6 +41,20 @@ describe("recoverState", () => {
   });
 });
 
+describe("duplicate markers", () => {
+  it("notes copies of an indexed finding without reporting a problem", () => {
+    const rec = record();
+    const index = codec.state(stateIndex({ headSha: HEAD, outcome: "APPROVED", records: [{ record: rec, location: { kind: "review_comment", comment_id: 2 }, url: "u" }], informational: [] }));
+    const recovered = recoverState(
+      snapshot({ issueComments: [summaryComment(`${SUMMARY_MARKER}\n${index}`)], reviewComments: [findingComment(1, rec), findingComment(2, rec)] }),
+      [BOT.id],
+    );
+    expect(recovered.problems).toEqual([]);
+    expect(recovered.records.map((entry) => entry.location)).toEqual([{ kind: "review_comment", comment_id: 2 }]);
+    expect(recovered.notes).toEqual(["finding f-0123456789 has 1 duplicate marker besides its indexed one"]);
+  });
+});
+
 describe("recovery never drops a blocker", () => {
   it("carries an unrecoverable index entry into the next state", () => {
     const lost = { id: "f-0123456789", status: "open" as const, location: { kind: "review_comment" as const, comment_id: 1 } };
@@ -206,6 +220,69 @@ describe("publish", () => {
     );
     expect(client.writes).toEqual([]);
     expect(result.resolutions).toEqual(["T9"]);
+  });
+
+  it("resolves every thread the app opened for a closed finding, including duplicates", async () => {
+    const client = new FakeClient();
+    const closed = { ...record(), status: "resolved" as const, evidence: [{ kind: "commit" as const, sha: HEAD }] };
+    const result = await publish(
+      base(client, {
+        snapshot: snapshot({
+          reviewComments: [findingComment(1, record()), findingComment(2, record()), findingComment(3, record(), AUTHOR), findingComment(4, record({ id: "f-dddddddddd" }))],
+          threads: [1, 2, 3, 4].map((root) => ({ id: `T${root}`, isResolved: false, resolvedBy: null, rootCommentId: root })),
+        }),
+        recovered: [{ record: closed, location: { kind: "review_comment", comment_id: 2 }, url: "u" }],
+        planned: [closed],
+      }),
+    );
+    expect(result.resolutions.sort()).toEqual(["T1", "T2"]);
+  });
+
+  it("keeps a review GitHub created despite reporting an error, instead of reposting its findings", async () => {
+    const client = new FakeClient();
+    let failed = false;
+    client.landThenFail = (method, path) => {
+      if (failed || !path.endsWith("/reviews")) return undefined;
+      failed = true;
+      return new GitHubError(422, method, path, "An internal error occurred, please try again.");
+    };
+    const result = await publish(base(client, { planned: [record()], outcome: "CHANGES_NEEDED" }));
+    expect(result.problems).toEqual([]);
+    expect(client.writes.map((write) => `${write.method} ${write.path}`)).toEqual(["POST /repos/o/r/pulls/7/reviews"]);
+    expect(result.records).toHaveLength(1);
+    expect(result.records[0]?.location).toEqual({ kind: "review_comment", comment_id: client.comments[0]?.id });
+  });
+
+  it("never reposts when it cannot tell whether a failed review was created", async () => {
+    const client = new FakeClient();
+    client.listingFails = true;
+    client.landThenFail = (method, path) => (path.endsWith("/reviews") ? new GitHubError(422, method, path, "internal error") : undefined);
+    const result = await publish(base(client, { planned: [record()], outcome: "CHANGES_NEEDED" }));
+    expect(client.writes).toHaveLength(1);
+    expect(result.problems).toEqual([
+      "could not submit the findings review: GitHub POST /repos/o/r/pulls/7/reviews failed with 422: internal error",
+      "new finding f-0123456789 was not published",
+    ]);
+  });
+
+  it("neither moves nor reposts a failed file-level comment it cannot check", async () => {
+    const client = new FakeClient();
+    client.listingFails = true;
+    client.failOn = (method, path) => (path.endsWith("/pulls/7/comments") ? new GitHubError(502, method, path, "bad gateway") : undefined);
+    const result = await publish(base(client, { planned: [record({ line: 40 })], requestChanges: false }));
+    expect(client.writes).toEqual([]);
+    expect(result.records).toEqual([]);
+    expect(result.problems).toEqual(["new finding f-0123456789 was not published"]);
+  });
+
+  it("keeps a file-level comment GitHub created despite reporting an error", async () => {
+    const client = new FakeClient();
+    client.landThenFail = (method, path) => (path.endsWith("/pulls/7/comments") ? new GitHubError(502, method, path, "bad gateway") : undefined);
+    const outside = record({ line: 40 });
+    const result = await publish(base(client, { planned: [outside], requestChanges: false }));
+    expect(result.problems).toEqual([]);
+    expect(client.writes.map((write) => `${write.method} ${write.path}`)).toEqual(["POST /repos/o/r/pulls/7/comments"]);
+    expect(result.records[0]?.location).toEqual({ kind: "review_comment", comment_id: client.comments[0]?.id });
   });
 
   it("does not replay posted chunks when a later chunk is rejected", async () => {
