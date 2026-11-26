@@ -90,6 +90,10 @@ Output: `outcome` is `APPROVED`, `CHANGES_NEEDED`, `ESCALATE` or `INCOMPLETE`, o
 - Earlier finding markers are trusted only when the App authored them.
 - Pin the action to a release tag or commit SHA.
 
+## Releases
+
+[semantic-release](https://github.com/semantic-release/semantic-release) cuts every release from `main` after CI passes. It reads the Conventional Commits since the last `vX.Y.Z` tag: `fix`, `perf` and `revert` cut a patch, `feat` a minor, and a breaking change (`type!:` or a `BREAKING CHANGE:` footer) a major. Other types don't release. Each release gets a `vX.Y.Z` tag and a GitHub Release with generated notes. The major tag (`v1`) then moves to the same commit, so `@v1` follows the latest compatible release. Pin `@vX.Y.Z` or a commit SHA if you need it fixed.
+
 ## Development
 
 ```bash
