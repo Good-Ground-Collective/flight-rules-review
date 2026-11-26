@@ -14,7 +14,6 @@
     "check": "npm run typecheck && npm test && npm run build && git diff --exit-code -- dist"
   },
   "devDependencies": {
-    "@semantic-release/exec": "7.1.0",
     "@types/node": "26.6.11",
     "esbuild": "0.28.2",
     "semantic-release": "25.0.9",
@@ -34,12 +33,6 @@
     "plugins": [
       "@semantic-release/commit-analyzer",
       "@semantic-release/release-notes-generator",
-      [
-        "@semantic-release/exec",
-        {
-          "successCmd": "echo \"version=${nextRelease.version}\" >> \"$GITHUB_OUTPUT\" && echo \"git-head=${nextRelease.gitHead}\" >> \"$GITHUB_OUTPUT\""
-        }
-      ],
       [
         "@semantic-release/github",
         {
