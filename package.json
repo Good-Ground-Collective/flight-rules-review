@@ -1,0 +1,27 @@
+{
+  "name": "flight-rules-review",
+  "private": true,
+  "type": "module",
+  "description": "Strict flight-rules code review for GitHub pull requests, run by Claude Code with a Claude OAuth token",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test && npm run build && git diff --exit-code -- dist"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.11",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2",
+    "vite": "8.3.8",
+    "vitest": "5.1.2"
+  },
+  "dependencies": {
+    "@good-ground-collective/flight-rules": "3.0.0",
+    "zod": "4.6.7"
+  }
+}

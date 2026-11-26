@@ -1,0 +1,28 @@
+name: flight-rules review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: flight-rules-review-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    if: >-
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+      || (github.event.issue.pull_request && startsWith(github.event.comment.body, '/flight-rules-review'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: Good-Ground-Collective/flight-rules-review@v1
+        with:
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          app-id: ${{ vars.FLIGHT_RULES_REVIEW_APP_ID }}
+          app-private-key: ${{ secrets.FLIGHT_RULES_REVIEW_PRIVATE_KEY }}

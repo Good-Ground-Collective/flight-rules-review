@@ -1,0 +1,176 @@
+name: flight-rules review
+description: Strict, always-comprehensive flight-rules code review by Claude Code, authenticated with a Claude OAuth token.
+author: Good Ground Collective
+branding:
+  icon: check-circle
+  color: gray-dark
+
+inputs:
+  claude-code-oauth-token:
+    description: Claude Code OAuth token from `claude setup-token`.
+    required: true
+  app-id:
+    description: Client ID or App ID of the GitHub App that posts the review.
+    required: true
+  app-private-key:
+    description: Private key of that GitHub App.
+    required: true
+  pr-number:
+    description: Pull request to review. Defaults to the triggering pull_request or issue_comment event.
+    required: false
+    default: ''
+  model:
+    description: Claude model for the reviewer.
+    required: false
+    default: claude-opus-5-5
+  max-turns:
+    description: Turn budget for the reviewer session.
+    required: false
+    default: '100'
+  review-context-path:
+    description: Repository review rules, read from the default branch, never the PR head.
+    required: false
+    default: CODE-REVIEW.md
+  decision-owners:
+    description: >-
+      Who may answer `decide` findings. A JSON object mapping decision-owner roles to GitHub logins,
+      or a comma-separated login list that applies to every role. Mapped owners may decide on their own PRs.
+      Empty means any human writer who is not the PR author.
+    required: false
+    default: ''
+  require-decision-mapping:
+    description: Keep a decision open when its owner has no explicit mapping, instead of using the independent-writer fallback.
+    required: false
+    default: 'false'
+  request-changes:
+    description: Submit blocking findings as a REQUEST_CHANGES review, and dismiss it once nothing blocking is open.
+    required: false
+    default: 'true'
+  approve:
+    description: Submit an APPROVE review when nothing blocking is open (instead of only dismissing the change request).
+    required: false
+    default: 'false'
+  fail-on:
+    description: 'When this step fails: `not-approved` (any outcome except APPROVED), `incomplete` (only when the review could not complete) or `never`.'
+    required: false
+    default: not-approved
+  skip-label:
+    description: PRs with this label are not reviewed.
+    required: false
+    default: skip-review
+  max-changed-lines:
+    description: Larger PRs end INCOMPLETE without running the reviewer.
+    required: false
+    default: '20000'
+  dry-run:
+    description: Log every GitHub write instead of performing it.
+    required: false
+    default: 'false'
+
+outputs:
+  outcome:
+    description: APPROVED, CHANGES_NEEDED, ESCALATE, INCOMPLETE, or empty when the PR was skipped.
+    value: ${{ steps.post.outputs.outcome }}
+
+runs:
+  using: composite
+  steps:
+    - name: Mint GitHub App token
+      id: app_token
+      uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.app-private-key }}
+        owner: ${{ github.repository_owner }}
+        repositories: ${{ github.event.repository.name }}
+
+    - name: Resolve pull request
+      id: pr
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number || github.event.issue.number }}
+      run: |
+        set -euo pipefail
+        if [ -z "$PR_NUMBER" ]; then echo "::error::No pull request number: set pr-number or trigger on pull_request/issue_comment"; exit 1; fi
+        pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")
+        echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+        echo "head_sha=$(jq -r .head.sha <<<"$pr")" >> "$GITHUB_OUTPUT"
+        if [ "$(jq -r '.head.repo.full_name // ""' <<<"$pr")" != "$GITHUB_REPOSITORY" ]; then
+          echo "::notice::PR #$PR_NUMBER comes from a fork; flight-rules review only runs on same-repository PRs"
+          echo "fork=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "fork=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Check out the PR head
+      if: steps.pr.outputs.fork == 'false'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ steps.pr.outputs.head_sha }}
+        fetch-depth: 0
+        persist-credentials: false
+        token: ${{ steps.app_token.outputs.token }}
+
+    - name: Set up Node
+      if: steps.pr.outputs.fork == 'false'
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: 24
+
+    - name: Gather review context
+      id: gather
+      if: steps.pr.outputs.fork == 'false'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
+        PR_NUMBER: ${{ steps.pr.outputs.number }}
+        EXPECTED_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+        EVENT_NAME: ${{ github.event_name }}
+        SENDER_LOGIN: ${{ github.event.sender.login }}
+        CONTEXT_PATH: ${{ inputs.review-context-path }}
+        DECISION_OWNERS: ${{ inputs.decision-owners }}
+        REQUIRE_DECISION_MAPPING: ${{ inputs.require-decision-mapping }}
+        SKIP_LABEL: ${{ inputs.skip-label }}
+        MAX_CHANGED_LINES: ${{ inputs.max-changed-lines }}
+        WORKSPACE: ${{ github.workspace }}
+        KIT_HOME: ${{ github.action_path }}/dist
+        OUT_DIR: ${{ runner.temp }}/flight-rules-review
+      run: node "$GITHUB_ACTION_PATH/dist/gather.mjs"
+
+    - name: Review with Claude
+      id: claude
+      if: steps.gather.outputs.run == 'true'
+      continue-on-error: true
+      uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+      with:
+        claude_code_oauth_token: ${{ inputs.claude-code-oauth-token }}
+        github_token: ${{ steps.app_token.outputs.token }}
+        prompt: ${{ steps.gather.outputs.prompt }}
+        display_report: 'false'
+        claude_args: >-
+          --model ${{ inputs.model }}
+          --max-turns ${{ inputs.max-turns }}
+          --add-dir ${{ steps.gather.outputs.context_dir }}
+          --json-schema '${{ steps.gather.outputs.schema }}'
+          --allowed-tools "Read,Glob,Grep"
+          --disallowed-tools "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task"
+
+    - name: Publish the review
+      id: post
+      if: always() && steps.gather.outcome == 'success' && steps.gather.outputs.skip == 'false'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
+        PR_NUMBER: ${{ steps.pr.outputs.number }}
+        REQUEST_CHANGES: ${{ inputs.request-changes }}
+        APPROVE: ${{ inputs.approve }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        MODEL: ${{ inputs.model }}
+        EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+        KIT_HOME: ${{ github.action_path }}/dist
+        OUT_DIR: ${{ runner.temp }}/flight-rules-review
+      run: node "$GITHUB_ACTION_PATH/dist/post.mjs"

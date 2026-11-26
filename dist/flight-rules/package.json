@@ -1,0 +1,176 @@
+{
+  "name": "@good-ground-collective/flight-rules",
+  "version": "3.0.0",
+  "description": "Harness-agnostic software workflow skills and review library",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Good-Ground-Collective/flight-rules.git"
+  },
+  "license": "MIT",
+  "author": "",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json",
+    "./review": {
+      "types": "./dist/code-review/index.d.ts",
+      "import": "./dist/review.js"
+    },
+    "./sdk": {
+      "types": "./dist/sdk/index.d.ts",
+      "import": "./dist/sdk.js"
+    },
+    "./sdk/claude-agent": {
+      "types": "./dist/sdk/claude-agent/index.d.ts",
+      "import": "./dist/sdk-claude-agent.js"
+    },
+    "./sdk/deepagents": {
+      "types": "./dist/sdk/deepagents/index.d.ts",
+      "import": "./dist/sdk-deepagents.js"
+    },
+    "./review/schema": "./contracts/code-review/review.v1.schema.json",
+    "./review/transport-schema": "./contracts/code-review/review.v1.transport.schema.json",
+    "./mcp": {
+      "types": "./dist/mcp/index.d.ts",
+      "import": "./dist/mcp.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "flight-rules": "bin/flight-rules.mjs"
+  },
+  "files": [
+    "bin/",
+    "docs/",
+    "!docs/validation/e6-installed-consumer-proof.json",
+    "skills/",
+    "agents/",
+    "adapters/",
+    ".claude-plugin/",
+    "dist/",
+    "contracts/",
+    ".agents/"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs && tsc -p tsconfig.build.json",
+    "check:source-status": "node scripts/check-source-artifacts.mjs --working-tree",
+    "fmt": "sort-package-json && oxfmt -c .config/.oxfmtrc.json",
+    "fmt:check": "sort-package-json --check && oxfmt -c .config/.oxfmtrc.json --check",
+    "release": "semantic-release",
+    "test": "vitest run",
+    "test:agents:codex-config": "npm run build && node scripts/test-codex-agent-config.mjs",
+    "test:agents:live": "npm run build && node scripts/test-agents-live.mjs",
+    "test:installation:native": "npm run build && node scripts/test-native-installation.mjs",
+    "test:installed-consumers": "node scripts/test-installed-consumers.mjs",
+    "test:release:artifacts": "node scripts/test-release-artifacts.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "release": {
+    "branches": [
+      "main"
+    ],
+    "plugins": [
+      "@semantic-release/commit-analyzer",
+      "@semantic-release/release-notes-generator",
+      [
+        "@semantic-release/exec",
+        {
+          "prepareCmd": "node scripts/set-version.mjs ${nextRelease.version} && npm run build",
+          "publishCmd": "npm publish --registry https://npm.pkg.github.com"
+        }
+      ],
+      [
+        "@semantic-release/git",
+        {
+          "assets": [
+            "package.json",
+            "package-lock.json",
+            "bin/**",
+            "dist/**",
+            "contracts/code-review/*.schema.json",
+            ".claude-plugin/marketplace.json",
+            ".agents/plugins/marketplace.json",
+            ".claude-plugin/plugin.json"
+          ],
+          "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+        }
+      ],
+      "@semantic-release/github"
+    ]
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.3.1",
+    "@octokit/graphql": "^9.0.3",
+    "@octokit/rest": "^22.0.1",
+    "commander": "^15.0.0",
+    "mdast-util-from-markdown": "^2.0.3",
+    "mdast-util-gfm": "^3.1.0",
+    "micromark-extension-gfm": "^3.0.0",
+    "micromark-util-decode-string": "^2.0.1",
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.316",
+    "@anthropic-ai/sdk": "0.93.0",
+    "@atlaskit/adf-utils": "^20.9.15",
+    "@eslint/js": "^10.0.1",
+    "@good-ground-collective/preflight": "^0.2.2",
+    "@langchain/core": "1.3.5",
+    "@langchain/langgraph": "1.5.0",
+    "@modelcontextprotocol/client": "2.3.1",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@semantic-release/commit-analyzer": "^13.0.1",
+    "@semantic-release/exec": "^7.1.0",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^12.0.8",
+    "@semantic-release/release-notes-generator": "^14.1.1",
+    "@types/mdast": "^4.0.4",
+    "@types/node": "^25.9.1",
+    "@typescript-eslint/eslint-plugin": "^8.60.0",
+    "@typescript-eslint/parser": "^8.60.0",
+    "deepagents": "1.15.0",
+    "esbuild": "^0.28.0",
+    "eslint": "^10.8.0",
+    "eslint-plugin-import-x": "^4.17.1",
+    "eslint-plugin-unicorn": "^72.0.0",
+    "langchain": "1.5.16",
+    "oxfmt": "^0.52.0",
+    "semantic-release": "^25.0.3",
+    "smol-toml": "1.9.1",
+    "sort-package-json": "^3.6.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.60.0",
+    "vitest": "^4.1.8"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.316",
+    "@langchain/core": "1.3.5",
+    "@langchain/langgraph": "1.5.0",
+    "deepagents": "1.15.0",
+    "langchain": "1.5.16"
+  },
+  "peerDependenciesMeta": {
+    "@anthropic-ai/claude-agent-sdk": {
+      "optional": true
+    },
+    "@langchain/core": {
+      "optional": true
+    },
+    "@langchain/langgraph": {
+      "optional": true
+    },
+    "deepagents": {
+      "optional": true
+    },
+    "langchain": {
+      "optional": true
+    }
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  }
+}
